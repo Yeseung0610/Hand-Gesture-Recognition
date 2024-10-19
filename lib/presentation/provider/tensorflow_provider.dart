@@ -40,8 +40,13 @@ class TensorflowStateNotifier extends StateNotifier<TensorflowState> {
         state = state.copyWith(
           handFoldPercent: _calculateHandFoldPercentage(inferenceResults!['point']),
         );
-        log(state.handFoldPercent.toString());
+        log("Hand fold value: ${state.handFoldPercent.toString()}");
+      } else {
+        log("Hand not detected");
       }
+
+      log("uiThreadInferenceElapsedTime: $uiThreadInferenceElapsedTime");
+      log("------------------------------------------------------------");
 
       // // pass results to HomeView
       // widget.resultsCallback(inferenceResults["recognitions"]);
