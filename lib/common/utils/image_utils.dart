@@ -3,7 +3,7 @@ import 'package:image/image.dart';
 
 class ImageUtils {
 
-  static Image convertYUV420ToImage(CameraImage cameraImage) {
+  static Image convertCameraImageToImage(CameraImage cameraImage) {
     final int width = cameraImage.width;
     final int height = cameraImage.height;
 

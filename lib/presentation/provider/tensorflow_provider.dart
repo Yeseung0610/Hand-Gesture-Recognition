@@ -1,157 +1,141 @@
 import 'dart:developer';
-import 'dart:io';
+import 'dart:isolate';
+import 'dart:math' as math;
 import 'dart:ui';
 
 import 'package:camera/camera.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:hand_gesture_recognition/common/assets/assets.dart';
-import 'package:image/image.dart';
-import 'package:tflite_flutter/tflite_flutter.dart';
-import "package:tflite_flutter_plus/src/bindings/types.dart" as types;
-import 'package:tflite_flutter_helper_plus/tflite_flutter_helper_plus.dart';
+import 'package:hand_gesture_recognition/domain/entity/hand_entity.dart';
 
-final Provider<TensorflowProvider> tensorflowProvider = Provider((ref) => TensorflowProvider(TensorflowState()));
+import '../../common/utils/isolate_utils.dart';
+
+final tensorflowProvider = StateNotifierProvider<TensorflowStateNotifier, TensorflowState>((ref) => TensorflowStateNotifier(TensorflowState(
+  handEntity: HandEntity(),
+)));
 
 // TODO [20241012] 현재는 Provider내부에 모든 기능을 구현했음. 추후 레이어 바운더리 구분 필요 (data/data_source, data/repository_impl domain/use_case, domain/repository, presentation/provider)
-class TensorflowProvider extends StateNotifier<TensorflowState> {
+class TensorflowStateNotifier extends StateNotifier<TensorflowState> {
+  TensorflowStateNotifier(super.state);
 
-  static int inputSize = 300;
-  final double existThreshold = 0.1;
-  final double scoreThreshold = 0.3;
+  final IsolateUtils _isolateUtils = IsolateUtils();
 
-  TensorflowProvider(super.state);
-
-  Future<void> loadModel() async {
-    if (state.interpreter.hasValue) return;
-
-    try {
-      state = state.copyWith(
-        interpreter: AsyncValue.data(await Interpreter.fromAsset(Assets.models.handLandMark, options: InterpreterOptions()..threads = 4))
-      );
-
-      for (var tensor in state.interpreter.value!.getOutputTensors()) {
-        state.outputShapes.add(tensor.shape);
-        state.outputTypes.add(tensor.type);
-      }
-
-    } catch (e, t) {
-      log("TensorflowError", error: e, stackTrace: t);
-    }
-  }
-
-  TensorImage getProcessedImage(TensorImage inputImage) {
-    final imageProcessor = ImageProcessorBuilder()
-        .add(ResizeOp(inputSize, inputSize, ResizeMethod.bilinear))
-        .add(NormalizeOp(0, 255))
-        .build();
-
-    inputImage = imageProcessor.process(inputImage);
-    return inputImage;
-  }
-
-  Map<String, dynamic>? predict(Image image) {
-    if (!state.interpreter.hasValue) {
-      return null;
-    }
-
-    if (Platform.isAndroid) {
-      image = copyRotate(image, -90);
-      image = flipHorizontal(image);
-    }
-    final tensorImage = TensorImage(types.TfLiteType.float32);
-    tensorImage.loadImage(image);
-    final inputImage = getProcessedImage(tensorImage);
-
-    TensorBuffer outputLandmarks = TensorBufferFloat(state.outputShapes[0]);
-    TensorBuffer outputExist = TensorBufferFloat(state.outputShapes[1]);
-    TensorBuffer outputScores = TensorBufferFloat(state.outputShapes[2]);
-
-    final inputs = <Object>[inputImage.buffer];
-
-    final outputs = <int, Object>{
-      0: outputLandmarks.buffer,
-      1: outputExist.buffer,
-      2: outputScores.buffer,
-    };
-
-    state.interpreter.value!.runForMultipleInputs(inputs, outputs);
-
-    if (outputExist.getDoubleValue(0) < existThreshold ||
-        outputScores.getDoubleValue(0) < scoreThreshold) {
-      return null;
-    }
-
-    final landmarkPoints = outputLandmarks.getDoubleList().reshape([21, 3]);
-    final landmarkResults = <Offset>[];
-    for (var point in landmarkPoints) {
-      landmarkResults.add(Offset(
-        point[0] / inputSize * image.width,
-        point[1] / inputSize * image.height,
-      ));
-    }
-
-    return {'point': landmarkResults};
+  Future<void> initStateAsync() async {
+    await _isolateUtils.initIsolate();
   }
 
   onLatestImageAvailable(CameraImage cameraImage) async {
-    if (state.interpreter.hasValue && !state.predicting) {
+    if (state.handEntity.interpreter != null && !state.predicting) {
       state = state.copyWith(predicting: true);
 
-      var uiThreadTimeStart = DateTime.now().millisecondsSinceEpoch;
+      final uiThreadTimeStart = DateTime.now().millisecondsSinceEpoch;
+      
+      final Map<String, dynamic>? inferenceResults = await _inference(
+        cameraImage: cameraImage,
+        interpreterAddress: state.handEntity.interpreter!.address,
+      );
 
-      // Data to be passed to inference isolate
-      var isolateData = IsolateData(
-          cameraImage, state.interpreter.value!.address, classifier.labels);
+      final uiThreadInferenceElapsedTime = DateTime.now().millisecondsSinceEpoch - uiThreadTimeStart;
 
-      /// perform inference in separate isolate
-      Map<String, dynamic> inferenceResults = await inference(isolateData);
+      if (inferenceResults?.containsKey('point') == true) {
+        state = state.copyWith(
+          handFoldPercent: _calculateHandFoldPercentage(inferenceResults!['point']),
+        );
+        log(state.handFoldPercent.toString());
+      }
 
-      var uiThreadInferenceElapsedTime =
-          DateTime.now().millisecondsSinceEpoch - uiThreadTimeStart;
+      // // pass results to HomeView
+      // widget.resultsCallback(inferenceResults["recognitions"]);
+      //
+      // // pass stats to HomeView
+      // widget.statsCallback((inferenceResults["stats"] as Stats)
+      //   ..totalElapsedTime = uiThreadInferenceElapsedTime);
 
-      // pass results to HomeView
-      widget.resultsCallback(inferenceResults["recognitions"]);
-
-      // pass stats to HomeView
-      widget.statsCallback((inferenceResults["stats"] as Stats)
-        ..totalElapsedTime = uiThreadInferenceElapsedTime);
-
-      // set predicting to false to allow new frames
-      setState(() {
-        predicting = false;
-      });
+      state = state.copyWith(predicting: false);
     }
+  }
+
+  Future<Map<String, dynamic>?> _inference({
+    required CameraImage cameraImage,
+    required int interpreterAddress,
+  }) async {
+    final ReceivePort receivePort = ReceivePort();
+
+    final isolateData = IsolateData(
+      cameraImage: cameraImage,
+      interpreterAddress: interpreterAddress,
+      responsePort: receivePort.sendPort,
+    );
+
+    _isolateUtils.sendPort.send(isolateData);
+
+    final Map<String, dynamic>? results = await receivePort.first;
+    receivePort.close();
+
+    return results;
+  }
+
+  double _calculateHandFoldPercentage(List<Offset> points) {
+    if (state.initialDistance == 0.0) {
+      state = state.copyWith(initialDistance: (points[1] - points[0]).distance);
+    }
+
+    final indicesToCheck = [4, 8, 12, 16, 20];
+
+    final currentDistance = (points[1] - points[0]).distance;
+
+    final distanceFactor = state.initialDistance / currentDistance;
+
+    double weightedDistanceSum = 0.0;
+    double weightSum = 0.0;
+    double interpolationFactor = 0.5;
+
+    for (int i = 0; i < indicesToCheck.length - 1; i++) {
+      int index1 = indicesToCheck[i];
+      int index2 = indicesToCheck[i + 1];
+
+      double segmentDistance = (points[index1] - points[index2]).distance * distanceFactor;
+      double weight = 1.0 / (1.0 + interpolationFactor * segmentDistance);
+
+      weightedDistanceSum += segmentDistance * weight;
+      weightSum += weight;
+    }
+
+    double averageWeightedDistance = weightedDistanceSum / weightSum;
+
+    double maxDistance = 500.0;
+    double foldPercentage = (1 - (averageWeightedDistance / maxDistance)) * 100.0;
+    return foldPercentage.clamp(0.0, 100.0);
   }
 }
 
 class TensorflowState {
 
-  final AsyncValue<Interpreter> interpreter;
+  final HandEntity handEntity;
 
-  final List<List<int>> outputShapes;
+  final bool predicting;
 
-  final List<TensorType> outputTypes;
+  final double initialDistance;
 
-  bool predicting;
+  final double handFoldPercent;
 
   TensorflowState({
-    this.interpreter = const AsyncValue.loading(),
-    this.outputShapes = const [],
-    this.outputTypes = const [],
+    required this.handEntity,
     this.predicting = false,
+    this.initialDistance = 0.0,
+    this.handFoldPercent = 0.0,
   });
 
   TensorflowState copyWith({
-    AsyncValue<Interpreter>? interpreter,
-    List<List<int>>? outputShapes,
-    List<TensorType>? outputTypes,
+    HandEntity? handEntity,
     bool? predicting,
+    double? initialDistance,
+    double? handFoldPercent,
   }) {
     return TensorflowState(
-      interpreter: interpreter ?? this.interpreter,
-      outputShapes: outputShapes ?? this.outputShapes,
-      outputTypes: outputTypes ?? this.outputTypes,
+      handEntity: handEntity ?? this.handEntity,
       predicting: predicting ?? this.predicting,
+      initialDistance: initialDistance ?? this.initialDistance,
+      handFoldPercent: handFoldPercent ?? this.handFoldPercent,
     );
   }
 

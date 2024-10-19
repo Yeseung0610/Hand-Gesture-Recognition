@@ -4,10 +4,7 @@ import 'package:hand_gesture_recognition/presentation/provider/tensorflow_provid
 import 'package:hand_gesture_recognition/presentation/screen/camera_screen.dart';
 
 void main() async {
-  WidgetsFlutterBinding.ensureInitialized();
-  await ProviderContainer().read(tensorflowProvider).loadModel();
-
-  runApp(const HandGestureRecognitionApplication());
+  runApp(const ProviderScope(child: HandGestureRecognitionApplication()));
 }
 
 class HandGestureRecognitionApplication extends StatelessWidget {

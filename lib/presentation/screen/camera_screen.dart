@@ -2,6 +2,7 @@ import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:hand_gesture_recognition/presentation/provider/camera_provider.dart';
+import 'package:hand_gesture_recognition/presentation/provider/tensorflow_provider.dart';
 
 class CameraScreen extends ConsumerStatefulWidget {
   const CameraScreen({super.key});
@@ -17,9 +18,19 @@ class CameraScreenState extends ConsumerState<CameraScreen> {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((timeStamp) async {
       final cameraProviderNotifier = ref.read(cameraProvider.notifier);
-      await cameraProviderNotifier.initProvider();
-      cameraProviderNotifier.startCameraStream();
+      final tensorflowProviderNotifier = ref.read(tensorflowProvider.notifier);
+
+      await tensorflowProviderNotifier.initStateAsync();
+      await cameraProviderNotifier.initCamera();
+      cameraProviderNotifier.startCameraStream(tensorflowProviderNotifier.onLatestImageAvailable);
     });
+  }
+
+  @override
+  void dispose() {
+    super.dispose();
+    final cameraProviderNotifier = ref.read(cameraProvider.notifier);
+    cameraProviderNotifier.stopCameraStream();
   }
 
   @override
@@ -28,10 +39,9 @@ class CameraScreenState extends ConsumerState<CameraScreen> {
 
     return Scaffold(
       backgroundColor: Colors.black,
-      body: cameraController != null ? AspectRatio(
-        aspectRatio: ref.watch(cameraProvider).controller.value!.value.aspectRatio,
-        child: CameraPreview(cameraController),
-      ) : Container(),
+      body: cameraController != null
+          ? CameraPreview(cameraController)
+          : Container(),
     );
   }
 }

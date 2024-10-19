@@ -1,4 +1,11 @@
+import 'dart:developer';
 import 'dart:isolate';
+
+import 'package:camera/camera.dart';
+import 'package:hand_gesture_recognition/domain/entity/hand_entity.dart';
+import 'package:tflite_flutter/tflite_flutter.dart';
+
+import 'image_utils.dart';
 
 class IsolateUtils {
   Isolate? _isolate;
@@ -18,29 +25,21 @@ class IsolateUtils {
   }
 
   static void _entryPoint(SendPort mainSendPort) async {
+    log('IN ISOLATE');
+
     final childReceivePort = ReceivePort();
     mainSendPort.send(childReceivePort.sendPort);
 
-    await for (final _IsolateData? isolateData in childReceivePort) {
+    await for (final IsolateData? isolateData in childReceivePort) {
       if (isolateData != null) {
-        final results = isolateData.handler(isolateData.params);
+        final interpreter = Interpreter.fromAddress(isolateData.interpreterAddress);
+        final hand = HandEntity(interpreter: interpreter);
+        final image = ImageUtils.convertCameraImageToImage(isolateData.cameraImage);
+
+        final results = hand.predict(image);
         isolateData.responsePort.send(results);
       }
     }
-  }
-
-  void sendMessage({
-    required Function handler,
-    required Map<String, dynamic> params,
-    required SendPort sendPort,
-    required ReceivePort responsePort,
-  }) {
-    final isolateData = _IsolateData(
-      handler: handler,
-      params: params,
-      responsePort: responsePort.sendPort,
-    );
-    sendPort.send(isolateData);
   }
 
   void dispose() {
@@ -50,14 +49,14 @@ class IsolateUtils {
   }
 }
 
-class _IsolateData {
-  Function handler;
-  Map<String, dynamic> params;
+class IsolateData {
+  CameraImage cameraImage;
+  int interpreterAddress;
   SendPort responsePort;
 
-  _IsolateData({
-    required this.handler,
-    required this.params,
+  IsolateData({
+    required this.cameraImage,
+    required this.interpreterAddress,
     required this.responsePort,
   });
 }

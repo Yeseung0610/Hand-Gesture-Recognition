@@ -11,18 +11,7 @@ final cameraProvider = StateNotifierProvider<CameraStateNotifier, CameraState>((
 class CameraStateNotifier extends StateNotifier<CameraState> {
   CameraStateNotifier(super.state);
 
-  final IsolateUtils _isolateUtils = IsolateUtils();
-
-  Future<void> initProvider() async {
-    await _initStateAsync();
-    await _initCamera();
-  }
-
-  Future<void> _initStateAsync() async {
-    await _isolateUtils.initIsolate();
-  }
-
-  Future<void> _initCamera() async {
+  Future<void> initCamera() async {
     final cameras = await availableCameras();
     final newCamera = cameras[1];
     await _onNewCameraSelected(newCamera);
@@ -36,11 +25,11 @@ class CameraStateNotifier extends StateNotifier<CameraState> {
         ResolutionPreset.medium,
         enableAudio: false,
       )),
-      isRun: false,
     );
 
     try {
       await state.controller.value!.initialize();
+      state = state.copyWith(isInitialized: true);
     } on CameraException catch (e, t) {
       log('CameraException', error: e, stackTrace: t);
     }
@@ -61,26 +50,26 @@ class CameraState {
 
   final AsyncValue<CameraDescription> _cameraDescription;
 
-  final bool isRun;
+  final bool isInitialized;
 
   bool draw;
 
   CameraState({
     this.controller = const AsyncValue.loading(),
     AsyncValue<CameraDescription> cameraDescription = const AsyncValue.loading(),
-    this.isRun = false,
+    this.isInitialized = false,
     this.draw = false,
   }): _cameraDescription = cameraDescription;
 
   CameraState copyWith({
     AsyncValue<CameraController>? controller,
     AsyncValue<CameraDescription>? cameraDescription,
-    bool? isRun,
+    bool? isInitialized,
     bool? draw,
   }) => CameraState(
     controller: controller ?? this.controller,
     cameraDescription: cameraDescription ?? _cameraDescription,
-    isRun: isRun ?? this.isRun,
+    isInitialized: isInitialized ?? this.isInitialized,
     draw: draw ?? this.draw,
   );
 }
